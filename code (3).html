@@ -1,0 +1,458 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sistema de Ponto Facial</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/face-api.js@0.22.2/dist/face-api.min.js"></script>
+    <style>
+        #videoContainer {
+            position: relative;
+            margin: 0 auto;
+            max-width: 640px;
+        }
+        #video {
+            background-color: #000;
+            border-radius: 8px;
+        }
+        #canvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+        }
+        .loading {
+            display: inline-block;
+            width: 20px;
+            height: 20px;
+            border: 3px solid rgba(255,255,255,.3);
+            border-radius: 50%;
+            border-top-color: #fff;
+            animation: spin 1s ease-in-out infinite;
+            margin-right: 8px;
+        }
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body class="bg-gray-100 min-h-screen">
+    <div class="container mx-auto px-4 py-8">
+        <div class="bg-white rounded-lg shadow-lg overflow-hidden mb-8">
+            <div class="bg-blue-600 px-6 py-4">
+                <h1 class="text-2xl font-bold text-white">Sistema de Ponto Facial</h1>
+                <p class="text-blue-100">Empresa: Pai Company LTDA</p>
+            </div>
+            
+            <div class="p-6">
+                <div id="statusMessage" class="mb-6 p-4 rounded-md bg-gray-100 hidden">
+                    <p id="statusText" class="flex items-center"></p>
+                </div>
+                
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-8">
+                    <div id="videoContainer" class="order-2 md:order-1">
+                        <video id="video" width="640" height="480" autoplay muted></video>
+                        <canvas id="canvas" width="640" height="480"></canvas>
+                    </div>
+                    
+                    <div class="order-1 md:order-2">
+                        <h2 class="text-xl font-semibold mb-4">Registrar Ponto</h2>
+                        
+                        <div class="mb-6">
+                            <label class="block text-gray-700 mb-2">Nome do Funcionário</label>
+                            <input type="text" id="employeeName" placeholder="Digite o nome completo" class="w-full px-4 py-2 border rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500">
+                        </div>
+                        <div class="flex justify-center mb-6">
+                            <button id="trainBtn" class="bg-green-600 hover:bg-green-700 text-white font-medium py-2 px-4 rounded-md transition duration-200">
+                                Cadastrar Funcionário
+                            </button>
+                        </div>
+                        <div class="text-center text-gray-500 mb-4">
+                            A câmera irá reconhecer automaticamente os funcionários cadastrados
+                        </div>
+                        
+                        <div class="bg-gray-50 p-4 rounded-md">
+                            <h3 class="font-medium mb-2">Últimos Registros</h3>
+                            <div id="lastRegistrations" class="space-y-2">
+                                <!-- Registros serão adicionados aqui -->
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <div class="bg-white rounded-lg shadow-lg overflow-hidden mt-8">
+            <div class="px-6 py-4 border-b">
+                <h2 class="text-xl font-semibold">Administração</h2>
+            </div>
+            
+            <div class="p-6 grid grid-cols-1 md:grid-cols-2 gap-8">
+                <div>
+                    <h3 class="font-medium mb-4">Relatório Diário</h3>
+                    <div class="mb-4">
+                        <label class="block text-gray-700 mb-2">Data</label>
+                        <input type="date" id="reportDate" class="w-full px-4 py-2 border rounded-md">
+                    </div>
+                    <button id="generateReportBtn" class="bg-blue-600 hover:bg-blue-700 text-white font-medium py-2 px-4 rounded-md">
+                        Gerar Relatório
+                    </button>
+                </div>
+                
+                <div>
+                    <h3 class="font-medium mb-4">Funcionários Registrados</h3>
+                    <div class="overflow-x-auto">
+                        <table class="min-w-full border">
+                            <thead>
+                                <tr class="bg-gray-100">
+                                    <th class="px-4 py-2 text-left">ID</th>
+                                    <th class="px-4 py-2 text-left">Nome</th>
+                                    <th class="px-4 py-2 text-left">Cadastrado em</th>
+                                </tr>
+                            </thead>
+                            <tbody id="employeesTable">
+                                <!-- Dados dos funcionários serão adicionados aqui -->
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Variáveis globais
+        let faceMatcher;
+        let isTraining = false;
+        
+        // Horários de registro
+        const timeSlots = {
+            firstEntry: { start: "07:40", end: "08:10" },
+            firstBreak: { start: "11:40", end: "12:10" },
+            secondEntry: { start: "12:50", end: "13:10" },
+            exit: { start: "17:20", end: "17:40" }
+        };
+
+        // Armazenar registros de ponto e últimos horários de registro
+        const attendanceRecords = {};
+        const lastRegistrationTimes = {};
+
+        // Carregar modelos faciais
+        async function loadModels() {
+            showStatus("Inicializando reconhecimento facial...", 'loading');
+            
+            try {
+                await Promise.all([
+                    faceapi.nets.tinyFaceDetector.loadFromUri('https://justadudewhohacks.github.io/face-api.js/models'),
+                    faceapi.nets.faceLandmark68Net.loadFromUri('https://justadudewhohacks.github.io/face-api.js/models'),
+                    faceapi.nets.faceRecognitionNet.loadFromUri('https://justadudewhohacks.github.io/face-api.js/models')
+                ]);
+                hideStatus();
+                startVideo();
+            } catch (error) {
+                showStatus("Erro na inicialização: " + error.message, 'error');
+            }
+        }
+        
+        // Iniciar vídeo
+        function startVideo() {
+            navigator.mediaDevices.getUserMedia({ video: true })
+                .then(stream => {
+                    const video = document.getElementById('video');
+                    video.srcObject = stream;
+                    video.onloadedmetadata = () => {
+                        video.play();
+                        // Detectar rostos periodicamente
+                        setInterval(detectFaces, 100);
+                    };
+                })
+                .catch(err => {
+                    showStatus("Erro ao acessar a câmera: " + err.message, 'error');
+                });
+        }
+        
+        // Detectar rostos e registrar ponto automaticamente
+        async function detectFaces() {
+            if (isTraining) return;
+            
+            const video = document.getElementById('video');
+            const canvas = document.getElementById('canvas');
+            
+            try {
+                const detections = await faceapi.detectAllFaces(video, new faceapi.TinyFaceDetectorOptions())
+                    .withFaceLandmarks()
+                    .withFaceDescriptors();
+                
+                // Limpar canvas
+                const context = canvas.getContext('2d');
+                context.clearRect(0, 0, canvas.width, canvas.height);
+                
+                if (detections.length > 0) {
+                    // Desenhar detecções
+                    faceapi.draw.drawDetections(canvas, detections);
+                    faceapi.draw.drawFaceLandmarks(canvas, detections);
+                    
+                    // Reconhecimento facial automático
+                    if (faceMatcher) {
+                        const results = detections.map(fd => faceMatcher.findBestMatch(fd.descriptor));
+                        results.forEach(result => {
+                            if (result.label !== "unknown" && result.distance < 0.5) {
+                                registerAttendance(result.label);
+                            }
+                        });
+                    }
+                }
+            } catch (error) {
+                console.error("Erro na detecção:", error);
+            }
+        }
+        
+        // Registrar ponto
+        function registerAttendance(employeeId) {
+            const now = new Date();
+            const registrationTime = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+            const registrationDate = now.toLocaleDateString();
+            const registrationMinutes = now.getMinutes();
+            const registrationHour = now.getHours();
+            const registrationSlot = getRegistrationSlot(registrationTime);
+            
+            // Verificar se já se passou uma hora desde o último registro
+            const lastRegistrationTime = lastRegistrationTimes[employeeId];
+            if (lastRegistrationTime) {
+                const timeDiff = (now - new Date(lastRegistrationTime)) / (1000 * 60); // Diferença em minutos
+                if (timeDiff < 60) {
+                    showStatus(`O funcionário ${employeeId} só pode registrar o ponto a cada 1 hora.`, 'warning');
+                    return;
+                }
+            }
+
+            // Calcular atraso
+            let delay = 0;
+            if (registrationSlot) {
+                if (registrationSlot === 'firstEntry' && (registrationHour > 8 || (registrationHour === 8 && registrationMinutes > 10))) {
+                    delay = (registrationHour * 60 + registrationMinutes) - (8 * 60 + 10);
+                } else if (registrationSlot === 'firstBreak' && (registrationHour > 12 || (registrationHour === 12 && registrationMinutes > 10))) {
+                    delay = (registrationHour * 60 + registrationMinutes) - (12 * 60 + 10);
+                } else if (registrationSlot === 'secondEntry' && (registrationHour > 13 || (registrationHour === 13 && registrationMinutes > 10))) {
+                    delay = (registrationHour * 60 + registrationMinutes) - (13 * 60 + 10);
+                } else if (registrationSlot === 'exit' && (registrationHour > 17 || (registrationHour === 17 && registrationMinutes > 40))) {
+                    delay = (registrationHour * 60 + registrationMinutes) - (17 * 60 + 40);
+                }
+            }
+
+            // Adicionar ao histórico
+            const registrationElement = document.createElement('div');
+            registrationElement.className = 'flex justify-between items-center p-2 bg-gray-50 rounded';
+            registrationElement.innerHTML = `
+                <span class="font-medium">${employeeId}</span>
+                <span>${registrationDate} ${registrationTime}${delay > 0 ? ' (Atraso: ' + delay + ' min)' : ''}</span>
+            `;
+            
+            const lastRegistrations = document.getElementById('lastRegistrations');
+            lastRegistrations.insertBefore(registrationElement, lastRegistrations.firstChild);
+            
+            // Limitar a 5 registros visíveis
+            if (lastRegistrations.children.length > 5) {
+                lastRegistrations.removeChild(lastRegistrations.lastChild);
+            }
+            
+            showStatus(`Ponto registrado automaticamente para ${employeeId}${delay > 0 ? ' com atraso de ' + delay + ' min' : ''}`, 'success');
+
+            // Armazenar o registro e o horário do último registro
+            if (!attendanceRecords[employeeId]) {
+                attendanceRecords[employeeId] = {};
+            }
+            attendanceRecords[employeeId][registrationTime] = delay; // Armazenar o atraso
+            lastRegistrationTimes[employeeId] = now; // Armazenar o último horário de registro
+        }
+
+        // Verificar o slot de registro
+        function getRegistrationSlot(time) {
+            const [hour, minute] = time.split(':').map(Number);
+            const currentTime = hour * 60 + minute;
+
+            if (currentTime >= 460 && currentTime <= 490) { // 07:40 - 08:10
+                return 'firstEntry';
+            } else if (currentTime >= 700 && currentTime <= 730) { // 11:40 - 12:10
+                return 'firstBreak';
+            } else if (currentTime >= 770 && currentTime <= 790) { // 12:50 - 13:10
+                return 'secondEntry';
+            } else if (currentTime >= 1040 && currentTime <= 1060) { // 17:20 - 17:40
+                return 'exit';
+            }
+            return null;
+        }
+
+        // Mostrar mensagem de status
+        function showStatus(message, type) {
+            const statusElement = document.getElementById('statusMessage');
+            const statusTextElement = document.getElementById('statusText');
+            
+            statusElement.classList.remove('hidden', 'bg-red-100', 'bg-green-100', 'bg-yellow-100', 'bg-gray-100');
+            
+            let icon = '';
+            if (type === 'loading') {
+                statusElement.classList.add('bg-gray-100');
+                icon = '<span class="loading"></span>';
+            } else if (type === 'success') {
+                statusElement.classList.add('bg-green-100');
+            } else if (type === 'error') {
+                statusElement.classList.add('bg-red-100');
+            } else if (type === 'warning') {
+                statusElement.classList.add('bg-yellow-100');
+            } else {
+                statusElement.classList.add('bg-gray-100');
+            }
+            
+            statusTextElement.innerHTML = icon + message;
+            statusElement.classList.remove('hidden');
+        }
+        
+        // Esconder mensagem de status
+        function hideStatus() {
+            document.getElementById('statusMessage').classList.add('hidden');
+        }
+        
+        // Gerar relatório
+        document.getElementById('generateReportBtn').addEventListener('click', () => {
+            const date = document.getElementById('reportDate').value;
+            
+            if (!date) {
+                showStatus("Selecione uma data para gerar o relatório", 'warning');
+                return;
+            }
+            
+            let reportContent = `Relatório de Ponto - ${date}\n\n`;
+            reportContent += `Empresa: Pai Company LTDA\n`;
+            reportContent += `Data: ${date}\n\n`;
+            reportContent += `Registros:\n====================\n\n`;
+            
+            for (const employee in attendanceRecords) {
+                reportContent += `Funcionário: ${employee}\n`;
+                reportContent += `Horários registrados:\n`;
+                
+                for (const time in attendanceRecords[employee]) {
+                    const delay = attendanceRecords[employee][time];
+                    reportContent += `- ${time} ${delay > 0 ? '(Atraso: ' + delay + ' minutos)' : ''}\n`;
+                }
+                reportContent += '\n';
+            }
+            
+            reportContent += `\nEste relatório foi gerado automaticamente pelo Sistema de Ponto Facial.`;
+            
+            // Enviar relatório por email
+            const email = 'joaocolegioseta@gmail.com';
+            const subject = `Relatório de Ponto - ${date}`;
+            const mailtoLink = `mailto:${email}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(reportContent)}`;
+            
+            // Abrir cliente de email padrão do usuário
+            window.location.href = mailtoLink;
+            
+            showStatus(`Relatório enviado para ${email}`, 'success');
+        });
+        
+        // Treinar novo funcionário
+        document.getElementById('trainBtn').addEventListener('click', async () => {
+            const employeeName = document.getElementById('employeeName').value.trim();
+            
+            if (!employeeName) {
+                showStatus("Por favor, insira o nome do funcionário", 'warning');
+                return;
+            }
+            
+            isTraining = true;
+            showStatus("Posicione-se na frente da câmera e mantenha-se parado. Capturando imagens...", 'loading');
+            
+            try {
+                // Capturar várias imagens para treinamento
+                const video = document.getElementById('video');
+                const descriptors = [];
+                
+                for (let i = 0; i < 5; i++) {
+                    showStatus(`Capturando imagem ${i+1} de 5...`, 'loading');
+                    await new Promise(resolve => setTimeout(resolve, 1000));
+                    
+                    const detections = await faceapi.detectAllFaces(video, new faceapi.TinyFaceDetectorOptions())
+                        .withFaceLandmarks()
+                        .withFaceDescriptors();
+                    
+                    if (detections.length === 0) {
+                        throw new Error("Nenhum rosto detectado");
+                    }
+                    
+                    descriptors.push(detections[0].descriptor);
+                }
+                
+                // Salvar descritor facial
+                const descriptorsToSave = descriptors.map(desc => Array.from(desc));
+                localStorage.setItem(`faceDescriptor_${employeeName}`, JSON.stringify(descriptorsToSave));
+                
+                showStatus(`${employeeName} cadastrado com sucesso!`, 'success');
+                
+                // Atualizar matcher facial
+                updateFaceMatcher();
+                
+                // Atualizar lista de funcionários
+                updateEmployeesList(employeeName);
+                
+            } catch (error) {
+                showStatus("Erro no cadastro: " + error.message, 'error');
+            } finally {
+                isTraining = false;
+            }
+        });
+
+        // Atualizar matcher facial com todos os funcionários registrados
+        function updateFaceMatcher() {
+            const labeledDescriptors = [];
+            
+            for (let i = 0; i < localStorage.length; i++) {
+                const key = localStorage.key(i);
+                
+                if (key.startsWith('faceDescriptor_')) {
+                    const employeeName = key.replace('faceDescriptor_', '');
+                    const descriptors = JSON.parse(localStorage.getItem(key));
+                    
+                    const float32Descriptors = descriptors.map(desc => new Float32Array(desc));
+                    labeledDescriptors.push(new faceapi.LabeledFaceDescriptors(employeeName, float32Descriptors));
+                }
+            }
+            
+            if (labeledDescriptors.length > 0) {
+                faceMatcher = new faceapi.FaceMatcher(labeledDescriptors, 0.5);
+            }
+        }
+
+        // Atualizar lista de funcionários
+        function updateEmployeesList(employeeName) {
+            const employeesTable = document.getElementById('employeesTable');
+            const existingRow = document.querySelector(`#employeesTable tr[data-id="${employeeName}"]`);
+            
+            if (!existingRow) {
+                const now = new Date();
+                const registerDate = now.toLocaleDateString();
+                
+                const newRow = document.createElement('tr');
+                newRow.dataset.id = employeeName;
+                newRow.innerHTML = `
+                    <td class="px-4 py-2">${employeesTable.children.length + 1}</td>
+                    <td class="px-4 py-2">${employeeName}</td>
+                    <td class="px-4 py-2">${registerDate}</td>
+                `;
+                
+                employeesTable.appendChild(newRow);
+            }
+        }
+
+        // Inicializar o sistema quando a página carregar
+        document.addEventListener('DOMContentLoaded', () => {
+            loadModels().then(() => {
+                updateFaceMatcher();
+            }).catch(error => {
+                console.error("Initialization error:", error);
+                showStatus("Falha na inicialização do sistema", 'error');
+            });
+        });
+    </script>
+</body>
+</html>
